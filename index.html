@@ -856,6 +856,32 @@ function makeIronKey(){const k=makeKey();k.traverse(o=>{if(o.isMesh)o.material=i
 // Tótem y huesos (para el inventario no hacen falta modelos; se ven en el HUD)
 setupCreatures=function(){CR.forEach(c=>scene.remove(c.mesh));CR=HS.creatures.map((c,i)=>({i,t:c.t,f:c.f,x:c.x,z:c.z,tx:c.x,tz:c.z,path:[],repath:Math.random(),chase:false,lit:0,yaw:0,st:0,form:0,nm:'',col:0,timer:0,bark:0,moving:0,
   mesh:c.t==='c'?makeCrawler():c.t==='s'?makeShadow():c.t==='m'?makeMimic():c.t==='a'?makeStalker():c.t==='i'?makeIlus():makeDog(),hitT:0}))};
+// Rastrero (versión dibujos): araña redonda con contorno negro, ojos grandes y marca roja en la espalda
+const spBody=new THREE.MeshStandardMaterial({color:0x0e0a12,roughness:.45,metalness:.2,emissive:0x0c0612,emissiveIntensity:.6});
+const spLine=new THREE.MeshBasicMaterial({color:0x000000,side:THREE.BackSide});
+const spWhite=new THREE.MeshStandardMaterial({color:0xf2f0ea,roughness:.3,emissive:0x303030,emissiveIntensity:.5});
+const spIris=new THREE.MeshBasicMaterial({color:0xd8261a}),spPupil=new THREE.MeshBasicMaterial({color:0x000000}),spMark=new THREE.MeshBasicMaterial({color:0xb81a14});
+function outlined(geo,mat,s){const g=new THREE.Group();g.add(new THREE.Mesh(geo,mat));const o=new THREE.Mesh(geo,spLine);o.scale.setScalar(s||1.08);g.add(o);return g}
+function makeCrawler(){const g=new THREE.Group();
+  const ab=outlined(new THREE.SphereGeometry(.42,20,16),spBody,1.07);ab.scale.set(1,.82,1.12);ab.position.set(0,.55,-.42);g.add(ab);
+  const mk=new THREE.Mesh(new THREE.SphereGeometry(.09,10,8),spMark);mk.scale.set(.9,.25,1.6);mk.position.set(0,.88,-.42);g.add(mk);
+  const mk2=new THREE.Mesh(new THREE.SphereGeometry(.07,10,8),spMark);mk2.scale.set(1.2,.25,.7);mk2.position.set(0,.86,-.24);g.add(mk2);
+  const hd=outlined(new THREE.SphereGeometry(.27,18,14),spBody,1.08);hd.position.set(0,.52,.12);g.add(hd);
+  [-1,1].forEach(s=>{const e=new THREE.Group();e.position.set(s*.11,.62,.33);
+    const w=new THREE.Mesh(new THREE.SphereGeometry(.085,14,12),spWhite);e.add(w);
+    const ir=new THREE.Mesh(new THREE.SphereGeometry(.045,10,8),spIris);ir.position.set(0,0,.06);ir.scale.z=.5;e.add(ir);
+    const pu=new THREE.Mesh(new THREE.SphereGeometry(.022,8,6),spPupil);pu.position.set(0,0,.085);pu.scale.z=.5;e.add(pu);
+    const brow=new THREE.Mesh(new THREE.BoxGeometry(.13,.025,.03),spPupil);brow.position.set(-s*.01,.1,.04);brow.rotation.z=s*.35;e.add(brow);g.add(e)});
+  [[-.05,.76],[.05,.76],[-.16,.72],[.16,.72]].forEach(([x,y])=>{const e=new THREE.Mesh(new THREE.SphereGeometry(.022,6,6),spIris);e.position.set(x,y,.3);g.add(e)});
+  [-1,1].forEach(s=>{const f=new THREE.Mesh(new THREE.ConeGeometry(.03,.14,8),spWhite);f.position.set(s*.06,.36,.33);f.rotation.x=Math.PI*.9;g.add(f)});
+  const legs=[];const legMat=spBody;
+  for(let i=0;i<8;i++){const sd=i<4?-1:1,k=i%4;const piv=new THREE.Group();piv.position.set(sd*.2,.55,-.12+(k-1.5)*.17);
+    const up=new THREE.Mesh(new THREE.CylinderGeometry(.04,.035,.5,8),legMat);up.position.set(sd*.2,.16,0);up.rotation.z=-sd*.95;piv.add(up);
+    const kn=new THREE.Mesh(new THREE.SphereGeometry(.05,8,6),legMat);kn.position.set(sd*.4,.3,0);piv.add(kn);
+    const lo=new THREE.Mesh(new THREE.CylinderGeometry(.034,.012,.62,8),legMat);lo.position.set(sd*.56,.02,0);lo.rotation.z=sd*.5;piv.add(lo);
+    const tip=new THREE.Mesh(new THREE.SphereGeometry(.03,6,6),spLine.clone());tip.material.side=THREE.FrontSide;tip.position.set(sd*.7,-.26,0);piv.add(tip);
+    piv.rotation.y=(k-1.5)*.32*sd;g.add(piv);legs.push(piv)}
+  g.userData.legs=legs;scene.add(g);return g}
 // ---- Red: los mensajes pasan por un servidor público (MQTT), así funciona con cualquier router ----
 const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt'];
 function makeNet(code){
