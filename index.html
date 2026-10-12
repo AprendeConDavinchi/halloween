@@ -52,6 +52,11 @@ input:focus{outline:2px solid var(--blood)}
 .pad{display:grid;grid-template-columns:repeat(3,64px);gap:8px;justify-content:center}
 .pad button{min-width:0;width:64px;height:54px;margin:0;padding:0;font-size:22px;border-color:#444}
 .shake{animation:shk .35s}
+.difrow{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:6px 0 2px}
+.difrow button.dif{min-width:0;font-size:15px;padding:8px 12px;margin:0;border-color:#3a1414}
+.difrow button.dif.on{background:#5a0c10;border-color:var(--blood);color:#fff}
+.difrow button.dif:disabled{cursor:default}
+.difrow button.dif:disabled:not(.on){opacity:.35}
 #toast{position:absolute;left:50%;top:calc(env(safe-area-inset-top,0px) + 70px);transform:translate(-50%,-30px);opacity:0;transition:all .4s;background:rgba(20,12,4,.92);border:1px solid #8a6a2a;padding:10px 18px;z-index:7;pointer-events:none;text-align:center;min-width:220px}
 #toast.on{opacity:1;transform:translate(-50%,0)}
 #toast b{color:var(--wax);font-weight:400;font-size:18px;display:block}
@@ -61,7 +66,10 @@ input:focus{outline:2px solid var(--blood)}
 #achList li.ok{opacity:1}
 #achList b{font-weight:400;display:block;color:var(--wax)}
 #achList span{font-size:14px;opacity:.75}
-.screen.top{justify-content:flex-start}
+.screen{justify-content:flex-start}
+.screen>:first-child{margin-top:auto}
+.screen>:last-child{margin-bottom:auto}
+.screen.top>:first-child{margin-top:0}
 @keyframes shk{20%,60%{transform:translateX(-10px)}40%,80%{transform:translateX(10px)}}
 </style>
 </head>
@@ -85,6 +93,8 @@ input:focus{outline:2px solid var(--blood)}
     <h1>No mires<br>atrás</h1>
     <p>Te has despertado en una casa de dos plantas que no conoces. La puerta de la calle está cerrada con varias cerraduras. Encuentra todas las llaves y sal. Una de ellas está en una caja fuerte, y alguien dejó la combinación escrita en un papel.</p>
     <p>No estás solo. No todos los escondites están vacíos, no todo lo que brilla es una llave, y hay algo arriba que solo se mueve cuando no lo miras.</p>
+    <p class="dim" style="margin-bottom:0">Dificultad</p>
+    <div class="difrow" id="difMenu"></div>
     <div class="row"><button id="soloBtn">Jugar solo</button><button id="mpBtn">Multijugador online</button></div>
     <button id="achBtn" class="quiet">🏆 Logros</button>
     <p class="dim">Ordenador: WASD para moverte, ratón para mirar, espacio para la linterna, Mayús para correr, E para esconderte, leer o abrir.<br>Móvil: mitad izquierda para moverte, mitad derecha para mirar, 🔦 linterna, ✋ interactuar.</p>
@@ -114,6 +124,8 @@ input:focus{outline:2px solid var(--blood)}
     <h2>Sala <span id="roomCodeTxt"></span></h2>
     <ul id="lobbyList"></ul>
     <p class="dim">Las llaves cuentan para todo el grupo, pero para escapar cada uno tiene que haber cogido al menos una. El fantasma mata de un toque y va a por quien lleve la linterna encendida. Los rastreros y las sombras quitan vida. Uno de cada tres escondites tiene dentro al Escondedor.</p>
+    <p class="dim" id="difWho" style="margin-bottom:0"></p>
+    <div class="difrow" id="difLobby"></div>
     <p id="diffTxt"></p>
     <p class="dim" id="srvTxt"></p>
     <button id="goBtn" class="hidden">Empezar partida</button>
@@ -257,8 +269,23 @@ const sfx={
 function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 const ROOM_NAMES={patio:'Patio',vacio:'',recibidor:'Recibidor',salon:'Salón',cocina:'Cocina',comedor:'Comedor',bano:'Baño',biblioteca:'Biblioteca',salita:'Sala de estar',trastero:'Trastero',lavadero:'Lavadero',rellano:'Rellano',dormitorio:'Dormitorio',infantil:'Cuarto infantil',despacho:'Despacho'};
 function houseSize(np){return np<=2?[3,3]:np<=4?[4,3]:[4,4]}
-function creatureCounts(np){return {c:2+np,s:1+Math.ceil(np/2),m:1+Math.floor(np/3),a:np>=4?2:1,d:np>=5?2:1}}
-function genHouse(seed,np){
+const DIF_NAMES=['Muy fácil','Fácil','Intermedio','Difícil','Imposible'];
+// dmg: daño · spd: velocidad de las criaturas · gs: velocidad del fantasma · gT: segundos hasta que aparece el fantasma
+// reg: vida que recuperas por segundo si llevas un rato sin daño · det: alcance del olfato/oído · esc: probabilidad del Escondedor
+// bat: gasto de batería · inv: segundos de respiro tras un golpe · kd: llaves de más o de menos
+const DIFS=[
+  {dmg:.4,spd:.7,gs:.7,gT:45,reg:3,det:.6,esc:.15,bat:.8,inv:2.5,kd:-2},
+  {dmg:.65,spd:.82,gs:.85,gT:30,reg:2,det:.8,esc:.25,bat:1.1,inv:2,kd:-1},
+  {dmg:1,spd:1,gs:1,gT:20,reg:1.2,det:1,esc:1/3,bat:1.5,inv:1.6,kd:0},
+  {dmg:1.3,spd:1.15,gs:1.1,gT:10,reg:.5,det:1.2,esc:1/3,bat:1.8,inv:1.4,kd:0},
+  {dmg:1.7,spd:1.3,gs:1.25,gT:5,reg:0,det:1.5,esc:.45,bat:2.2,inv:1,kd:1}];
+function creatureCounts(np,dl){dl=dl==null?2:dl;
+  if(dl===0)return {c:1,s:1,m:1,a:1,d:1};
+  if(dl===1)return {c:1+Math.floor(np/3),s:1,m:1,a:1,d:1};
+  if(dl===2)return {c:1+Math.floor(np/2),s:1+Math.floor(np/3),m:1,a:1,d:1};
+  if(dl===3)return {c:2+np,s:1+Math.ceil(np/2),m:1+Math.floor(np/3),a:np>=4?2:1,d:np>=5?2:1};
+  return {c:3+Math.floor(np*1.5),s:2+np,m:2+Math.floor(np/2),a:2,d:2}}
+function genHouse(seed,np,dl){dl=dl==null?2:dl;const DD=DIFS[dl];
   const R=mulberry((seed>>>0)||1);const ri=(a,b)=>a+Math.floor(R()*(b-a+1));const pick=a=>a[Math.floor(R()*a.length)];
   const shuf=a=>{for(let i=a.length-1;i>0;i--){const j=Math.floor(R()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a};
   const [RW,RH]=houseSize(np),W=RW*RS+1,H=RH*RS+1,hx=Math.floor(RW/2),hy=RH-1;
@@ -350,9 +377,9 @@ function genHouse(seed,np){
   HS.items.forEach(it=>{if(it.kind!=='armario'&&it.kind!=='cama')return;const [dx,dy]=FRONT[it.side];
     const far=it.cells.reduce((b,c)=>((c[0]-b[0])*dx+(c[1]-b[1])*dy)>0?c:b,it.cells[0]);const fx_=far[0]+dx,fy=far[1]+dy;const i=idx(it.r,fx_,fy);
     if(fx_<1||fy<1||fx_>6||fy>6||F(it.f).map[i]!==0||!reach[it.f][i])return;
-    const id=HS.hides.length;HS.hides.push({id,f:it.f,type:it.kind,cx:it.cx,cz:it.cz,ry:it.ry,fx:(it.r.x0+fx_+.5)*T,fz:(it.r.y0+fy+.5)*T,esc:R()<1/3,room:it.room});it.hide=id});
+    const id=HS.hides.length;HS.hides.push({id,f:it.f,type:it.kind,cx:it.cx,cz:it.cz,ry:it.ry,fx:(it.r.x0+fx_+.5)*T,fz:(it.r.y0+fy+.5)*T,esc:R()<DD.esc,room:it.room});it.hide=id});
   // Llaves (una dentro de la caja fuerte), nota con el código
-  const NK=keysFor(np);HS.code=String(ri(1000,9999));
+  const NK=Math.max(3,Math.min(10,keysFor(np)+DD.kd));HS.code=String(ri(1000,9999));
   const kRooms=shuf(HS.floors.flatMap(fl=>fl.rooms).filter(r=>r.type!=='recibidor'&&r.type!=='rellano'&&r.type!=='despacho'&&r.type!=='vacio'));
   let ki=0;for(const r of kRooms){if(HS.keys.length>=NK-1)break;const ft=freeTiles(r,true);if(!ft.length)continue;const t=pick(ft);HS.keys.push({f:r.f,x:t[0],z:t[1],safe:false});setT(r,t[2],t[3],5)}
   while(HS.keys.length<NK-1){const r=pick(kRooms);const ft=freeTiles(r,true);if(ft.length){const t=pick(ft);HS.keys.push({f:r.f,x:t[0],z:t[1],safe:false});setT(r,t[2],t[3],5)}}
@@ -361,8 +388,8 @@ function genHouse(seed,np){
   const nRooms=HS.floors.flatMap(fl=>fl.rooms).filter(r=>r.type!=='despacho'&&r.type!=='recibidor'&&r.type!=='vacio');
   for(let t=0;t<50&&!HS.note;t++){const r=pick(nRooms),ft=freeTiles(r,false);if(ft.length){const p=pick(ft);HS.note={f:r.f,x:p[0]+rnd2(R),z:p[1]+rnd2(R),rot:R()*6.28,room:r.id}}}
   // Criaturas y fantasma
-  const cc=creatureCounts(np),cRooms=HS.floors.flatMap(fl=>fl.rooms).filter(r=>r.type!=='recibidor'&&r.type!=='rellano'&&r.type!=='vacio');
-  const spawnIn=(t)=>{for(let k=0;k<30;k++){const r=pick(cRooms),ft=freeTiles(r,true);if(ft.length){const p=pick(ft);HS.creatures.push({t,f:r.f,x:p[0],z:p[1]});return}}};
+  const cc=creatureCounts(np,dl),cRooms=HS.floors.flatMap(fl=>fl.rooms).filter(r=>r.type!=='recibidor'&&r.type!=='rellano'&&r.type!=='vacio');
+  const sp0=HS.spawns[0];const spawnIn=(t)=>{for(let k=0;k<60;k++){const r=pick(cRooms),ft=freeTiles(r,true).filter(p=>r.f===1||Math.hypot(p[0]-sp0[0],p[1]-sp0[1])>16||k>40);if(ft.length){const p=pick(ft);HS.creatures.push({t,f:r.f,x:p[0],z:p[1]});return}}};
   rep(cc.c,()=>spawnIn('c'));rep(cc.s,()=>spawnIn('s'));
   rep(cc.m,()=>spawnIn('m'));
   const upRooms=F(1).rooms.filter(r=>r.type!=='rellano'&&r.type!=='vacio');
@@ -647,6 +674,7 @@ const cleanName=v=>String(v==null?'':v).replace(/[\u0000-\u001f\u007f-\u009f\u20
   chest(){tone(180,.4,.12,'sawtooth',0,120);noise(.3,500,1,.15)}
 });
 // ---------- ESTADO ----------
+let DL=(()=>{try{const v=parseInt(localStorage.getItem('nma_dif'));return v>=0&&v<=4?v:2}catch(e){return 2}})(),D=DIFS[DL],lastHurt=-99;
 let state='menu',mode='solo',NP=1,NK=5,seed=1,time=0,gTime=0,got=0,lastT=0;
 let myCh=[],moveLvl=0,ALERT={x:0,z:0,f:0,t:0,id:0},alertSeen=0,hurt=false,encT=0,lastMine=0,myKeys=[],myEsc=[],myCode=false,hp=100,inv=0,light=true,battery=100,flickT=0,nextEv=0,hbT=0,scareT=0,scareKind=1,escT=0,lockedMsgT=0,fakeT=0,bob=0,stepT=0,stamina=100,stairCD=0,hidden=null,safeOpen=false,deathTitle='',deathMsg='',lastGx=0,lastGz=0,lastGf=1,skT=0,hissT=0;
 const P={x:0,z:0,f:0,yaw:0,pitch:0},G={x:0,z:0,f:1,tx:0,tz:0,active:false,nextTp:0,switchT:0};
@@ -659,6 +687,9 @@ function fmt(t){const m=Math.floor(t/60),s=Math.floor(t%60);return m+':'+String(
 function showBest(){const b=bestTime();$('bestMenu').textContent=b?('Tu mejor tiempo en solitario: '+fmt(b)):''}
 showBest();
 const SCREENS=['menu','mpSetup','lobby','over','win','logros'];
+function renderDif(id,editable){const box=$(id);box.textContent='';DIF_NAMES.forEach((n,i)=>{const b=document.createElement('button');b.textContent=n;b.className='dif'+(i===DL?' on':'');b.disabled=!editable;
+  b.onclick=()=>{if(!editable)return;DL=i;try{localStorage.setItem('nma_dif',String(i))}catch(e){}renderDif(id,editable);if(id==='difLobby'&&R){R.presence({dif:DL});renderLobby()}};box.appendChild(b)})}
+renderDif('difMenu',true);
 $('achBtn').onclick=()=>{renderAch();show('logros')};$('achBack').onclick=()=>show('menu');
 function show(id){SCREENS.forEach(s=>$(s).classList.toggle('hidden',s!==id))}
 let msgTimer=null;
@@ -666,12 +697,12 @@ function say(t,dur){const m=$('msg');m.textContent=t;m.style.opacity=1;clearTime
 function lockPointer(){if(isTouch)return;try{const r=glc.requestPointerLock&&glc.requestPointerLock();if(r&&r.catch)r.catch(()=>{})}catch(e){}}
 const walkList=[[],[]];
 function setupWorld(){
-  HS=genHouse(seed,NP);NK=HS.keys.length;buildHouse(HS);setupCreatures();setupChests();
+  D=DIFS[DL];HS=genHouse(seed,NP,DL);NK=HS.keys.length;buildHouse(HS);setupCreatures();setupChests();
   walkList[0]=[];walkList[1]=[];HS.floors.forEach((fl,f)=>{for(let i=0;i<fl.map.length;i++)if(fl.map[i]===0&&HS.reach[f][i])walkList[f].push(i)});
   keyObjs.forEach(k=>scene.remove(k));keyObjs=HS.keys.map(k=>{const m=makeKey();m.position.set(k.x,k.f*FH+(k.safe?.45:.9),k.z);m.visible=!k.safe;scene.add(m);return m});
   const sp=HS.spawns[mode==='mp'?Math.abs(hashStr(myPeer()))%HS.spawns.length:0];P.x=sp[0];P.z=sp[1];P.f=0;P.yaw=0;P.pitch=0;
   G.x=HS.ghost.x;G.z=HS.ghost.z;G.f=HS.ghost.f;G.tx=G.x;G.tz=G.z;G.active=false;G.nextTp=40;G.switchT=20;lastGx=G.x;lastGz=G.z;lastGf=G.f;
-  myKeys=[];lastMine=0;myEsc=[];myCh=[];ALERT={x:0,z:0,f:0,t:0,id:0};alertSeen=0;hurt=false;moveLvl=0;myCode=false;hp=100;inv=0;got=0;time=0;gTime=0;light=true;battery=100;stamina=100;flickT=0;nextEv=14+Math.random()*8;hbT=0;scareT=0;escT=0;fakeT=0;fakeFig.visible=false;stairCD=0;hidden=null;safeOpen=false;
+  lastHurt=-99;myKeys=[];lastMine=0;myEsc=[];myCh=[];ALERT={x:0,z:0,f:0,t:0,id:0};alertSeen=0;hurt=false;moveLvl=0;myCode=false;hp=100;inv=0;got=0;time=0;gTime=0;light=true;battery=100;stamina=100;flickT=0;nextEv=14+Math.random()*8;hbT=0;scareT=0;escT=0;fakeT=0;fakeFig.visible=false;stairCD=0;hidden=null;safeOpen=false;
   if(safeDoor)safeDoor.rotation.y=HS.safe.ry;ghost.visible=false;$('codeTxt').textContent='';
 }
 function startGame(){initAudio();if(AC&&AC.state==='suspended')AC.resume();
@@ -741,8 +772,8 @@ function interact(){if(state!=='play'||uiOpen())return;const a=findAct();if(!a)r
   if(a.t==='safe'){openSafe();return}
   if(a.t==='chest'){myCh.push(a.c.id);sfx.chest();if(a.c.item==='botiquin'){hp=Math.min(100,hp+40);say('Dentro había un botiquín. Recuperas vida.',3)}else{battery=100;say('Dentro había pilas nuevas. Linterna cargada.',3)}return}
   if(a.t==='hide'){const h=a.h;sfx.wardrobe();
-    if(h.esc&&!escUsed().has(h.id)){myEsc.push(h.id);escT=1.1;sfx.scream2();hp-=50;inv=1.5;P.x=h.fx;P.z=h.fz;
-      hurt=true;if(hp<=0){die('El Escondedor','Te esperaba dentro.')}else{say('¡El Escondedor! Te ha quitado la mitad de la vida.',3.5);unlock('escondedor')}return}
+    if(h.esc&&!escUsed().has(h.id)){myEsc.push(h.id);escT=1.1;sfx.scream2();hp-=DL===0?30:DL===1?40:50;lastHurt=time;inv=D.inv;P.x=h.fx;P.z=h.fz;
+      hurt=true;if(hp<=0){die('El Escondedor','Te esperaba dentro.')}else{say(DL>=2?'¡El Escondedor! Te ha quitado la mitad de la vida.':'¡El Escondedor! Te ha quitado mucha vida.',3.5);unlock('escondedor')}return}
     hidden=h;P.yaw=h.ry+Math.PI;P.pitch=0}}
 
 // ---------- RUTAS (para los rastreros) ----------
@@ -758,25 +789,25 @@ function targetsAll(){const arr=[];if(state==='play')arr.push({x:P.x,z:P.z,f:P.f
   if(mode==='mp')others().forEach(p=>{const q=p.presence;if(inGame(p)&&q.st==='play'&&num(q.x)&&num(q.z))arr.push({x:q.x,z:q.z,f:q.f===1?1:0,l:!!q.l,yaw:num(q.yaw)?q.yaw:0,hid:!!q.hid,mv:q.mv===2?2:q.mv===1?1:0})});return arr}
 function simAI(dt){gTime+=dt;const ts=targetsAll();
   // Fantasma
-  if(!G.active){if(gTime>(mode==='mp'?5:8)){G.active=true;sfx.creak()}}
+  if(!G.active){if(gTime>D.gT){G.active=true;sfx.creak()}}
   if(G.active){let best=null,bs=1e9;ts.forEach(t=>{if(t.hid)return;const d=Math.hypot(t.x-G.x,t.z-G.z);if(!(t.l||(d<3.8&&t.f===G.f)))return;const sc=d+(t.f!==G.f?25:0);if(sc<bs){bs=sc;best=t}});
     if(best&&best.f!==G.f&&gTime>G.switchT){G.f=best.f;for(let k=0;k<20;k++){const [x,z]=randomWalk(G.f);if(Math.hypot(x-best.x,z-best.z)>11){G.x=x;G.z=z;break}}G.switchT=gTime+14}
     if(!best&&ALERT.t>0){if(ALERT.f!==G.f&&gTime>G.switchT){G.f=ALERT.f;for(let k=0;k<20;k++){const [x,z]=randomWalk(G.f);if(Math.hypot(x-ALERT.x,z-ALERT.z)>9){G.x=x;G.z=z;break}}G.switchT=gTime+14}if(ALERT.f===G.f){G.tx=ALERT.x;G.tz=ALERT.z}}
     if(best&&best.f===G.f){G.tx=best.x;G.tz=best.z}
     else if(!(ALERT.t>0&&ALERT.f===G.f)&&Math.hypot(G.tx-G.x,G.tz-G.z)<.8){const [x,z]=randomWalk(G.f);G.tx=x;G.tz=z}
     const d=best?Math.hypot(best.x-G.x,best.z-G.z):99,lit=best&&best.l&&best.f===G.f,near=best&&d<3.8;
-    const gs=3.1*(.32+.55*got/NK)*Math.min(1.3,1+.1*(NP-1))*(lit?1:.7)*(near?1.15:1);
+    const gs=3.1*D.gs*(.32+.55*got/NK)*Math.min(1.3,1+.1*(NP-1))*(lit?1:.7)*(near?1.15:1);
     const gx=G.tx-G.x,gz=G.tz-G.z,gl=Math.hypot(gx,gz);if(gl>.01){G.x+=gx/gl*Math.min(gl,gs*dt);G.z+=gz/gl*Math.min(gl,gs*dt)}
     if(lit&&gTime>G.nextTp&&d>16){G.x=best.x+Math.sin(best.yaw)*6;G.z=best.z+Math.cos(best.yaw)*6;G.nextTp=gTime+(mode==='mp'?12:17)+Math.random()*12}}
   // Criaturas
   if(ALERT.t>0)ALERT.t-=dt;
   CR.forEach(c=>{
     if(c.t==='c'){c.repath-=dt;
-      if(c.repath<=0){c.repath=.45;let tgt=null,bd=11;ts.forEach(t=>{if(t.hid||t.f!==c.f)return;const d=Math.hypot(t.x-c.x,t.z-c.z);if(d<bd){bd=d;tgt=t}});
+      if(c.repath<=0){c.repath=.45;let tgt=null,bd=9*D.det;ts.forEach(t=>{if(t.hid||t.f!==c.f)return;const d=Math.hypot(t.x-c.x,t.z-c.z);if(d<bd){bd=d;tgt=t}});
         c.chase=!!tgt;if(tgt){const p=bfs(c.f,c.x,c.z,tgt.x,tgt.z,40);if(p){c.path=p;c.tgt=tgt}else c.chase=false}
         if(!c.chase&&ALERT.t>8&&ALERT.f===c.f&&Math.hypot(ALERT.x-c.x,ALERT.z-c.z)<35){const p=bfs(c.f,c.x,c.z,ALERT.x,ALERT.z,80);if(p)c.path=p}
         if(!c.chase&&!c.path.length){const [x,z]=randomWalk(c.f);c.path=bfs(c.f,c.x,c.z,x,z,80)||[]}}
-      const sp=c.chase?2.75:1.5;let tx,tz;
+      const sp=(c.chase?2.4:1.4)*D.spd;let tx,tz;
       if(c.chase&&c.tgt&&Math.hypot(c.tgt.x-c.x,c.tgt.z-c.z)<1.6){tx=c.tgt.x;tz=c.tgt.z}else if(c.path.length){[tx,tz]=c.path[0];if(Math.hypot(tx-c.x,tz-c.z)<.2){c.path.shift();if(c.path.length)[tx,tz]=c.path[0]}}
       if(tx!==undefined){const dx=tx-c.x,dz_=tz-c.z,l=Math.hypot(dx,dz_);if(l>.01){const mv=Math.min(l,sp*dt);c.x+=dx/l*mv;c.z+=dz_/l*mv;c.yaw=Math.atan2(dx,dz_)}}}
     else if(c.t==='m')simMimic(c,dt,ts);else if(c.t==='a')simStalker(c,dt,ts);else if(c.t==='d')simDog(c,dt,ts);
@@ -784,7 +815,7 @@ function simAI(dt){gTime+=dt;const ts=targetsAll();
       let burned=false;ts.forEach(t=>{if(!t.l||t.f!==c.f)return;const dx=c.x-t.x,dz_=c.z-t.z,d=Math.hypot(dx,dz_);if(d>9)return;const ang=Math.atan2(-dx,-dz_);if(Math.abs(angD(t.yaw,ang))<.5){burned=true;c.fx=dx/d;c.fz=dz_/d}});
       c.lit=burned?Math.min(1,c.lit+dt*3):Math.max(0,c.lit-dt);
       if(burned){c.x+=c.fx*2.2*dt;c.z+=c.fz*2.2*dt}
-      else if(tgt){const dx=tgt.x-c.x,dz_=tgt.z-c.z,l=Math.hypot(dx,dz_);if(l>.1){c.x+=dx/l*1.15*dt;c.z+=dz_/l*1.15*dt}}
+      else if(tgt){const dx=tgt.x-c.x,dz_=tgt.z-c.z,l=Math.hypot(dx,dz_);if(l>.1){c.x+=dx/l*1.1*D.spd*dt;c.z+=dz_/l*1.1*D.spd*dt}}
       else{if(Math.hypot(c.tx-c.x,c.tz-c.z)<.5){const [x,z]=randomWalk(c.f);c.tx=x;c.tz=z}const dx=c.tx-c.x,dz_=c.tz-c.z,l=Math.hypot(dx,dz_)||1;c.x+=dx/l*.7*dt;c.z+=dz_/l*.7*dt}
       c.x=Math.max(T,Math.min((HS.W-1)*T,c.x));c.z=Math.max(T,Math.min((HS.H-1)*T,c.z))}})}
 
@@ -802,15 +833,15 @@ function simMimic(c,dt,ts){
   if(!c.init){c.init=1;disguise(c)}
   if(c.st===0){if(c.form===2){if(!c.path.length){const [x,z]=randomWalk(c.f);c.path=bfs(c.f,c.x,c.z,x,z,40)||[]}stepPath(c,1.25,dt)}
     for(const t of ts){if(t.hid||t.f!==c.f)continue;if(Math.hypot(t.x-c.x,t.z-c.z)<(c.form===2?1.9:1.45)){c.st=1;c.timer=8;c.path=[];break}}}
-  else{c.timer-=dt;const t=nearestT(c,ts,14);if(t)chaseStep(c,t,3.0,dt);
+  else{c.timer-=dt;const t=nearestT(c,ts,14);if(t)chaseStep(c,t,2.7*D.spd,dt);
     if(c.timer<=0){for(let k=0;k<25;k++){const f=Math.random()<.5?0:1,[x,z]=randomWalk(f);if(ts.every(t=>t.f!==f||Math.hypot(t.x-x,t.z-z)>12)){c.f=f;c.x=x;c.z=z;break}}disguise(c)}}}
 function simStalker(c,dt,ts){let watched=false;
   ts.forEach(t=>{if(t.f!==c.f||t.hid)return;const dx=c.x-t.x,dz_=c.z-t.z,d=Math.hypot(dx,dz_);if(d>22)return;if(Math.abs(angD(t.yaw,Math.atan2(-dx,-dz_)))<.8&&los(c.f,t.x,t.z,c.x,c.z))watched=true});
-  c.moving=watched?0:1;if(watched)return;const t=nearestT(c,ts);if(!t)return;chaseStep(c,t,3.9,dt)}
+  c.moving=watched?0:1;if(watched)return;const t=nearestT(c,ts,18*D.det);if(!t)return;chaseStep(c,t,3.0*D.spd,dt)}
 function simDog(c,dt,ts){c.timer-=dt;let heard=null,bd=1e9;
-  ts.forEach(t=>{if(t.f!==c.f)return;const d=Math.hypot(t.x-c.x,t.z-c.z),rad=t.hid?3.5:t.mv===2?13:t.mv===1?6.5:2.2;if(d<rad&&d<bd){bd=d;heard=t}});
-  if(heard){c.st=1;c.goal={x:heard.x,z:heard.z};if(c.timer<=0){c.timer=6;c.bark++;ALERT={x:heard.x,z:heard.z,f:c.f,t:11,id:ALERT.id+1}}}
-  if(c.st===1&&c.goal){chaseStep(c,c.goal,3.0,dt);if(Math.hypot(c.goal.x-c.x,c.goal.z-c.z)<.6&&!heard)c.st=0}
+  ts.forEach(t=>{if(t.f!==c.f)return;const d=Math.hypot(t.x-c.x,t.z-c.z),rad=(t.hid?3:t.mv===2?11:t.mv===1?5.5:2)*D.det;if(d<rad&&d<bd){bd=d;heard=t}});
+  if(heard){c.st=1;c.goal={x:heard.x,z:heard.z};if(c.timer<=0){c.timer=9;c.bark++;ALERT={x:heard.x,z:heard.z,f:c.f,t:11,id:ALERT.id+1}}}
+  if(c.st===1&&c.goal){chaseStep(c,c.goal,2.8*D.spd,dt);if(Math.hypot(c.goal.x-c.x,c.goal.z-c.z)<.6&&!heard)c.st=0}
   else{if(!c.path.length){const [x,z]=randomWalk(c.f);c.path=bfs(c.f,c.x,c.z,x,z,40)||[]}stepPath(c,1.1,dt)}}
 // ---------- LOGROS ----------
 const ACH=[['fantasma','La Dama de Blanco','Ver al fantasma.'],['c','Patas por todas partes','Cruzarte con un rastrero.'],['s','Miedo a la luz','Ver una sombra.'],['escondedor','Ocupado','Sobrevivir al Escondedor.'],['m','Nada es lo que parece','Descubrir al Mimetizador.'],['a','No parpadees','Ver al Acechador.'],['d','Te ha olido','Oír ladrar al Huele-miedos.'],['todos','Bestiario completo','Encontrar las siete criaturas.'],['caja','Cerrajero','Abrir la caja fuerte.'],['patio','Aire fresco','Salir al patio.'],['escapa','Superviviente','Escapar de la casa.'],['intacto','Intocable','Escapar sin perder vida.']];
@@ -848,7 +879,7 @@ function update(dt){
       if(P.f===0){P.f=1;P.x=(h.x0+1.5)*T;P.z=(h.y0+1.5)*T;P.yaw=0}else{P.f=0;P.x=(h.x0+1.5)*T;P.z=(h.y0+5.5)*T;P.yaw=Math.PI}
       say(P.f===1?'Primera planta':'Planta baja',1.5)}
   }else{moveLvl=0;hp=Math.min(100,hp+dt*3);stamina=Math.min(100,stamina+dt*20)}
-  if(lightOn()){battery-=dt*1.5;if(battery<=0){battery=0;light=false;sfx.click();say('Se ha agotado la batería…',2.5)}}else battery=Math.min(100,battery+dt*7);
+  if(lightOn()){battery-=dt*D.bat;if(battery<=0){battery=0;light=false;sfx.click();say('Se ha agotado la batería…',2.5)}}else battery=Math.min(100,battery+dt*7);
   if(flickT>0)flickT-=dt;
   // Llaves
   const taken=takenKeys();safeOpen=taken.has(NK-1);
@@ -874,13 +905,14 @@ function update(dt){
       if(d<.75){die('Te ha atrapado','El fantasma mata de un solo toque.');return}
       if(d<15){hbT-=dt;if(hbT<=0){sfx.heart(1-d/15);hbT=.32+d/15*.9}}}
     CR.forEach(c=>{if(c.f!==P.f)return;const d=Math.hypot(c.x-P.x,c.z-P.z);
-      if(c.t==='c'){if(d<.85&&inv<=0){hp-=25;inv=1.5;hurt=true;sfx.hit();say('¡Un rastrero te ha mordido!',2);const k=Math.max(d,.01);tryMove((P.x-c.x)/k*.9,0);tryMove(0,(P.z-c.z)/k*.9)}
+      if(c.t==='c'){if(d<.85&&inv<=0){hp-=20*D.dmg;inv=D.inv;lastHurt=time;hurt=true;sfx.hit();say('¡Un rastrero te ha mordido!',2);const k=Math.max(d,.01);tryMove((P.x-c.x)/k*.9,0);tryMove(0,(P.z-c.z)/k*.9)}
         if(d<6&&c.chase!==false){skT-=dt;if(skT<=0){sfx.skitter();skT=.7+d*.15}}}
-      else if(c.t==='m'){if(c.st===1&&d<.9&&inv<=0){hp-=35;inv=1.5;hurt=true;sfx.chomp();say('¡Era el Mimetizador!',2.5)}}
-      else if(c.t==='a'){if(d<.9&&inv<=0){hp-=50;inv=2;hurt=true;sfx.hit();sfx.scream2();say('El Acechador te ha alcanzado. No dejes de mirarlo.',3)}}
-      else if(c.t==='d'){if(c.st===1&&d<.9&&inv<=0){hp-=20;inv=1.5;hurt=true;sfx.chomp();say('¡El Huele-miedos te ha mordido!',2)}}
-      else if(d<1.15&&c.lit<.5){hp-=20*dt;hurt=true;hissT-=dt;if(hissT<=0){sfx.hiss();hissT=.9;say('Una sombra te está quitando vida…',1.2)}}});
-    if(hp<=0){die('Has muerto','Las criaturas de la casa han podido contigo.');return}}
+      else if(c.t==='m'){if(c.st===1&&d<.9&&inv<=0){hp-=30*D.dmg;inv=D.inv;lastHurt=time;hurt=true;sfx.chomp();say('¡Era el Mimetizador!',2.5)}}
+      else if(c.t==='a'){if(d<.9&&inv<=0){hp-=40*D.dmg;inv=D.inv+.5;lastHurt=time;hurt=true;sfx.hit();sfx.scream2();say('El Acechador te ha alcanzado. No dejes de mirarlo.',3)}}
+      else if(c.t==='d'){if(c.st===1&&d<.9&&inv<=0){hp-=15*D.dmg;inv=D.inv;lastHurt=time;hurt=true;sfx.chomp();say('¡El Huele-miedos te ha mordido!',2)}}
+      else if(d<1.15&&c.lit<.5){hp-=12*D.dmg*dt;lastHurt=time;hurt=true;hissT-=dt;if(hissT<=0){sfx.hiss();hissT=.9;say('Una sombra te está quitando vida…',1.2)}}});
+    if(hp<=0){die('Has muerto','Las criaturas de la casa han podido contigo.');return}
+    if(time-lastHurt>5&&hp<100)hp=Math.min(100,hp+D.reg*dt)}
   lastGx=G.x;lastGz=G.z;lastGf=G.f;
   CR.forEach(c=>{if(c.t!=='d')return;if(c.lb===undefined)c.lb=c.bark;if(c.bark!==c.lb){c.lb=c.bark;const d=Math.hypot(c.x-P.x,c.z-P.z);if(c.f===P.f&&d<30){sfx.bark(Math.max(.2,1-d/30));unlock('d');if(d>4)say('Un ladrido… algo ha olido a alguien.',2)}}});
   if(ALERT.id!==alertSeen&&ALERT.t>0){alertSeen=ALERT.id;if(hidden&&ALERT.f===hidden.f&&Math.hypot(ALERT.x-hidden.fx,ALERT.z-hidden.fz)<3.2){const h=hidden;hidden=null;P.x=h.fx;P.z=h.fz;P.yaw=h.ry+Math.PI;say('¡El Huele-miedos te ha olido! Te ha descubierto. ¡Corre!',3.5)}}
@@ -905,7 +937,7 @@ function win(){state='win';sfx.pickup();hideHud();unlock('escapa');if(!hurt)unlo
   $('winTxt').textContent=txt;$('winHint').textContent=mode==='mp'?'Si tus amigos siguen dentro, la casa sigue a por ellos.':'Pásale el link a tus amigos y comparad tiempos.';
   $('againBtn').textContent=mode==='mp'?'Volver a la sala':'Volver a entrar';show('win');showBest()}
 // ---------- MULTIJUGADOR ----------
-const VERSION=5;let startErr='',startPending=false,lastPoll=0;
+const VERSION=6;let startErr='',startPending=false,lastPoll=0;
 let R=null,roomCode='',myName='',myColor=0,myGid=0,lastGo=0,mpSt='lobby',presT=0;
 const peerSt=new Map();
 function peerList(){return R?R.peers().filter(p=>p.presence&&p.presence.n):[]}
@@ -932,14 +964,14 @@ async function joinRoom(){
   R.onStatus(st=>{if(mode!=='mp')return;if(st==='down'){if(state==='play')say('Conexión perdida. Reconectando…',4);else $('mpStatus').textContent='Reconectando…'}else{if(state==='play')say('Conexión recuperada.',2)}});
   $('joinBtn').disabled=false;
   myName=name;roomCode=code;mode='mp';mpSt='lobby';myGid=0;lastGo=0;peerSt.clear();myColor=0;
-  R.presence({n:myName,c:myColor,v:VERSION,st:'lobby',k:[],es:[],ch:[],gid:0,go:null,g:null,cr:null,al:null,er:null});
+  R.presence({n:myName,c:myColor,v:VERSION,dif:DL,st:'lobby',k:[],es:[],ch:[],gid:0,go:null,g:null,cr:null,al:null,er:null});
   R.onPeers(onPeersChange);
   state='lobby';show('lobby');renderLobby();
 }
 function leaveRoom(){if(R){R.leave().catch(()=>{});R=null}mode='solo';state='menu';avatars.forEach(a=>{a.peer=null;a.g.position.set(-50,0,-50);a.sp.intensity=0});show('menu')}
 $('leaveBtn').onclick=leaveRoom;
 $('goBtn').onclick=()=>{if(!R||!amHost())return;const go=Date.now();lastGo=go;myGid=go;NP=lobbyCount();seed=(Math.random()*1e9)>>>0;
-  R.presence({go,gid:go,st:'play',np:NP,sd:seed,k:[],es:[],ch:[],er:null});safeStart()};
+  R.presence({go,gid:go,st:'play',np:NP,sd:seed,dif:DL,k:[],es:[],ch:[],er:null});safeStart()};
 function safeStart(){if(startPending)return;startPending=true;$('diffTxt').textContent='Cargando la casa…';
   setTimeout(()=>{startPending=false;try{startGame();startErr=''}catch(e){startErr=String(e&&e.message||e).slice(0,80);state='lobby';mpSt='lobby';show('lobby');hideHud();if(R)R.presence({st:'lobby',er:startErr});renderLobby();$('diffTxt').textContent='No se ha podido cargar la casa en este dispositivo: '+startErr}},60)}
 function backToLobby(){mpSt='lobby';state='lobby';if(R)R.presence({st:'lobby',hid:null});show('lobby');renderLobby()}
@@ -951,9 +983,11 @@ function renderLobby(){
   $('roomCodeTxt').textContent=roomCode;$('srvTxt').textContent=R&&R.broker&&R.broker()>1?'Servidor de reserva '+R.broker()+'. Si un amigo no aparece, salid y volved a entrar los dos.':'';
   const old=ps.filter(p=>p.presence.v!==VERSION);if(old.length){$('srvTxt').textContent='⚠ '+old.map(p=>cleanName(p.presence.n)||'Alguien').join(', ')+' tiene una versión antigua del juego. Que recargue la página con Ctrl+Shift+R (en el móvil: cerrar la pestaña y volver a abrir el link).'}
   const errs=ps.filter(p=>p.presence.er&&p.presence.v===VERSION);if(errs.length)$('srvTxt').textContent+=' ⚠ Error al cargar en '+errs.map(p=>(cleanName(p.presence.n)||'Alguien')+': '+String(p.presence.er).slice(0,80)).join(' | ');
+  if(!host&&h&&Number.isInteger(h.presence.dif)&&h.presence.dif>=0&&h.presence.dif<=4)DL=h.presence.dif;
+  renderDif('difLobby',host);$('difWho').textContent=host?'Eliges tú la dificultad:':'Dificultad elegida por el anfitrión:';
   if(startErr)return;
-  const np=lobbyCount(),[rw,rh]=houseSize(np),cc=creatureCounts(np);
-  $('diffTxt').textContent=np<=1?'Si empiezas solo en la sala, la partida es como el modo solo.':('Con '+np+' jugadores: casa de 2 plantas y patio, '+keysFor(np)+' llaves, '+cc.c+' rastreros, '+cc.s+' sombras, '+cc.m+' mimetizador'+(cc.m>1?'es':'')+', '+cc.a+' acechador'+(cc.a>1?'es':'')+', '+cc.d+' huele-miedos y el fantasma un '+Math.round(Math.min(.3,.1*(np-1))*100)+' % más rápido.');
+  const np=lobbyCount(),[rw,rh]=houseSize(np),cc=creatureCounts(np,DL),nk=Math.max(3,Math.min(10,keysFor(np)+DIFS[DL].kd));
+  $('diffTxt').textContent=('Con '+np+(np===1?' jugador':' jugadores')+': casa de 2 plantas y patio, '+nk+' llaves, '+cc.c+' rastreros, '+cc.s+' sombras, '+cc.m+' mimetizador'+(cc.m>1?'es':'')+', '+cc.a+' acechador'+(cc.a>1?'es':'')+', '+cc.d+' huele-miedos y el fantasma un '+Math.round(Math.min(.3,.1*(np-1))*100)+' % más rápido.');
 }
 function onPeersChange(){if(state==='lobby')renderLobby();checkHostStart()}
 function checkHostStart(){const h=hostPeer();
@@ -961,7 +995,7 @@ function checkHostStart(){const h=hostPeer();
   if(!num(go)||go===lastGo)return;
   if(q.v!==VERSION){$('diffTxt').textContent='El anfitrión tiene otra versión del juego. Recargad todos la página (Ctrl+Shift+R, o cerrar y abrir la pestaña en el móvil).';return}
   if(!num(q.sd)||!Number.isInteger(q.np))return;
-  lastGo=go;myGid=go;NP=Math.max(1,Math.min(6,q.np));seed=q.sd>>>0;R.presence({gid:go,st:'play',k:[],es:[],ch:[],er:null});startErr='';safeStart()}
+  lastGo=go;myGid=go;NP=Math.max(1,Math.min(6,q.np));seed=q.sd>>>0;if(Number.isInteger(q.dif)&&q.dif>=0&&q.dif<=4)DL=q.dif;R.presence({gid:go,st:'play',k:[],es:[],ch:[],er:null});startErr='';safeStart()}
 function mpTick(dt){
   if(!R)return;
   const host=amHost(),ps=others();
