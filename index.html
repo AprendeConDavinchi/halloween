@@ -65,7 +65,7 @@ input:focus{outline:2px solid var(--blood)}
 
   <div id="mpSetup" class="screen hidden">
     <h2>Multijugador</h2>
-    <p>Elige un código de sala y pásaselo a tus amigos. El primero que entra con ese código es el anfitrión, y los demás se conectan a él. Si el anfitrión cierra el juego, la partida se acaba para todos.</p>
+    <p>Elige un código de sala y pásaselo a tus amigos. Todos los que pongan el mismo código entran en la misma casa. El primero que entra es el anfitrión y empieza la partida. Si se va, otro jugador pasa a serlo.</p>
     <label>Tu nombre<input id="nameIn" maxlength="16" autocomplete="off"></label>
     <label>Código de sala<input id="codeIn" maxlength="12" autocomplete="off" autocapitalize="off"></label>
     <button id="joinBtn">Entrar en la sala</button>
@@ -78,6 +78,7 @@ input:focus{outline:2px solid var(--blood)}
     <ul id="lobbyList"></ul>
     <p class="dim">Las llaves cuentan para todo el grupo, pero para escapar cada uno tiene que haber cogido al menos una. El fantasma va a por quien lleve la linterna encendida. Si te atrapa, quedas fuera.</p>
     <p id="diffTxt"></p>
+    <p class="dim" id="srvTxt"></p>
     <button id="goBtn" class="hidden">Empezar partida</button>
     <p id="waitTxt">Esperando a que el anfitrión empiece la partida…</p>
     <button id="leaveBtn" class="quiet">Salir de la sala</button>
@@ -100,7 +101,7 @@ input:focus{outline:2px solid var(--blood)}
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
 <script>
 (()=>{
 const $=id=>document.getElementById(id);
@@ -294,48 +295,46 @@ $('lightBtn').addEventListener('click',toggleLight);
 // ---------- MULTIJUGADOR ----------
 let roomApi,roomReady=true,R=null,roomCode='',myName='',myColor=0,myGid=0,lastGo=0,mpSt='lobby',presT=0;
 const peerSt=new Map();
-const PEER_OPTS={debug:0};
-// ---- Red: el anfitrión hace de servidor y reenvía el estado de todos ----
-function cleanPatch(p){const o={};if(!p||typeof p!=='object')return o;Object.keys(p).slice(0,16).forEach(k=>{if(/^[a-z]{1,4}$/i.test(k))o[k]=p[k]});return o}
-function mergeInto(obj,patch){Object.keys(patch).forEach(k=>{if(patch[k]===null)delete obj[k];else obj[k]=patch[k]})}
+// ---- Red: los mensajes pasan por un servidor público (MQTT), así funciona con cualquier router ----
+const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt'];
 function makeNet(code){
   return new Promise((resolve,reject)=>{
-    const hostId='nma-halloween-v1-'+code;let done=false;
-    const net={hostId,isHost:false,myId:null,pres:new Map(),mine:{},snap:[],listeners:[],conns:new Map(),hostConn:null,peer:null,dirty:false,timer:null,closed:false,lost:null};
-    const fail=m=>{if(done)return;done=true;try{net.peer&&net.peer.destroy()}catch(e){}reject(new Error(m))};
-    const ok=()=>{if(done)return;done=true;resolve(api)};
-    setTimeout(()=>fail('timeout'),15000);
-    function rebuild(){const arr=[];net.pres.forEach((p,id)=>{arr.push(Object.freeze({peer:id,sameTab:id===net.myId,kind:'viewer',presence:Object.freeze(id===net.myId?{...net.mine}:{...p})}))});net.snap=Object.freeze(arr);net.listeners.forEach(f=>{try{f({peers:net.snap})}catch(e){}})}
-    function broadcast(){if(!net.dirty)return;net.dirty=false;const ps=[];net.pres.forEach((p,id)=>ps.push([id,p]));const msg={t:'s',ps};net.conns.forEach(c=>{try{c.open&&c.send(msg)}catch(e){}});rebuild()}
+    if(!window.mqtt){reject(new Error('nolib'));return}
+    const base='nma-halloween-v2/'+code+'/p/';
+    const myId='p'+Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+    const net={mine:{j:Date.now()},pres:new Map(),seen:new Map(),snap:Object.freeze([]),listeners:[],client:null,dirty:true,changed:true,lastPub:0,closed:false,lost:null,lostTimer:null,tick:null,broker:0};
+    function rebuild(){const arr=[];net.pres.forEach((p,id)=>arr.push({peer:id,sameTab:false,kind:'viewer',presence:Object.freeze({...p})}));arr.push({peer:myId,sameTab:true,kind:'viewer',presence:Object.freeze({...net.mine})});
+      arr.sort((a,b)=>{const ja=num(a.presence.j)?a.presence.j:9e15,jb=num(b.presence.j)?b.presence.j:9e15;return ja-jb||(a.peer<b.peer?-1:1)});
+      net.snap=Object.freeze(arr.map(Object.freeze));net.listeners.forEach(f=>{try{f({peers:net.snap})}catch(e){}})}
+    function publish(){const c=net.client;if(!c||!c.connected)return;try{c.publish(base+myId,JSON.stringify(net.mine),{qos:0,retain:false})}catch(e){}net.lastPub=Date.now();net.dirty=false}
+    function start(){net.tick=setInterval(()=>{const now=Date.now();
+      if(net.dirty||now-net.lastPub>1000)publish();
+      net.seen.forEach((t,id)=>{if(now-t>6000){net.seen.delete(id);net.pres.delete(id);net.changed=true}});
+      if(net.changed){net.changed=false;rebuild()}},80)}
     const api={
       peers:()=>net.snap,
-      presence:patch=>{patch=cleanPatch(patch);mergeInto(net.mine,patch);
-        if(net.isHost){net.pres.set(net.myId,{...net.mine});net.dirty=true}
-        else if(net.hostConn&&net.hostConn.open){try{net.hostConn.send({t:'p',d:patch})}catch(e){}rebuild()}
-        return Promise.resolve()},
+      presence:patch=>{if(patch&&typeof patch==='object')Object.keys(patch).forEach(k=>{if(patch[k]===null)delete net.mine[k];else net.mine[k]=patch[k]});net.dirty=true;net.changed=true;return Promise.resolve()},
       onPeers:fn=>{net.listeners.push(fn);setTimeout(()=>fn({peers:net.snap}),0);return()=>{}},
-      leave:()=>{net.closed=true;clearInterval(net.timer);try{net.peer.destroy()}catch(e){}return Promise.resolve()},
-      isHost:()=>net.isHost,hostId:()=>net.hostId,onLost:fn=>{net.lost=fn}
+      leave:()=>{net.closed=true;clearInterval(net.tick);clearTimeout(net.lostTimer);const c=net.client;if(c){try{c.publish(base+myId,'',{qos:0,retain:false},()=>c.end(true))}catch(e){try{c.end(true)}catch(x){}}}return Promise.resolve()},
+      onLost:fn=>{net.lost=fn},broker:()=>net.broker
     };
-    function startHost(){
-      const peer=new Peer(hostId,PEER_OPTS);net.peer=peer;
-      peer.on('open',id=>{net.isHost=true;net.myId=id;net.pres.set(id,{});rebuild();net.timer=setInterval(broadcast,80);ok()});
-      peer.on('connection',conn=>{
-        conn.on('open',()=>{if(net.conns.has(conn.peer))return;if(net.conns.size>=5){try{conn.send({t:'full'})}catch(e){}setTimeout(()=>conn.close(),300);return}net.conns.set(conn.peer,conn);net.pres.set(conn.peer,{});net.dirty=true});
-        conn.on('data',d=>{if(!d||d.t!=='p')return;if(!net.conns.has(conn.peer)){if(net.conns.size>=5)return;net.conns.set(conn.peer,conn)}const cur=net.pres.get(conn.peer)||{};mergeInto(cur,cleanPatch(d.d));net.pres.set(conn.peer,cur);net.dirty=true});
-        const gone=()=>{net.conns.delete(conn.peer);net.pres.delete(conn.peer);net.dirty=true};conn.on('close',gone);conn.on('error',gone)});
-      peer.on('error',e=>{if(e&&e.type==='unavailable-id'){try{peer.destroy()}catch(x){}startClient()}else if(!done)fail(e&&e.type||'error')});
+    function connect(i){
+      if(i>=BROKERS.length){reject(new Error('timeout'));return}
+      let settled=false;
+      const c=mqtt.connect(BROKERS[i],{clientId:myId+'_'+i,clean:true,connectTimeout:7000,reconnectPeriod:2000,keepalive:20,will:{topic:base+myId,payload:'',qos:0,retain:false}});
+      const to=setTimeout(()=>{if(settled)return;settled=true;try{c.end(true)}catch(e){}connect(i+1)},9000);
+      c.on('connect',()=>{clearTimeout(net.lostTimer);net.lostTimer=null;
+        if(settled)return;settled=true;clearTimeout(to);net.client=c;net.broker=i+1;
+        c.subscribe(base+'+',{qos:0},err=>{if(err){try{c.end(true)}catch(e){}reject(new Error('sub'));return}rebuild();start();publish();resolve(api)})});
+      c.on('message',(topic,payload)=>{if(net.client!==c||!topic.startsWith(base))return;const id=topic.slice(base.length);if(id===myId||!/^[a-z0-9_]{4,40}$/.test(id))return;
+        if(!payload||!payload.length){net.pres.delete(id);net.seen.delete(id);net.changed=true;return}
+        if(payload.length>4096)return;let o;try{o=JSON.parse(new TextDecoder().decode(payload))}catch(e){return}
+        if(!o||typeof o!=='object'||Array.isArray(o))return;
+        if(!net.pres.has(id)&&net.pres.size>=5)return;
+        net.pres.set(id,o);net.seen.set(id,Date.now());net.changed=true});
+      c.on('close',()=>{if(net.closed||net.client!==c||net.lostTimer)return;net.lostTimer=setTimeout(()=>{if(!c.connected&&!net.closed&&net.lost)net.lost()},15000)});
     }
-    function startClient(){
-      const peer=new Peer(undefined,PEER_OPTS);net.peer=peer;
-      peer.on('open',id=>{net.myId=id;const conn=peer.connect(hostId,{reliable:true});net.hostConn=conn;
-        conn.on('open',()=>{net.pres.set(id,{});rebuild();ok()});
-        conn.on('data',d=>{if(!d)return;if(d.t==='full'){fail('full');return}if(d.t==='s'&&Array.isArray(d.ps)){const m=new Map();d.ps.slice(0,6).forEach(e=>{if(Array.isArray(e)&&typeof e[0]==='string'&&e[1]&&typeof e[1]==='object')m.set(e[0],e[1])});if(!m.has(net.myId))m.set(net.myId,{});net.pres=m;rebuild()}});
-        conn.on('close',()=>{if(!net.closed&&net.lost)net.lost()})});
-      peer.on('error',e=>{if(!done)fail(e&&e.type||'error');else if(e&&e.type==='peer-unavailable'&&net.lost&&!net.closed)net.lost()});
-    }
-    if(!window.Peer){fail('nolib');return}
-    startHost();
+    connect(0);
   });
 }
 function hashStr(s){let h=0;s=String(s||'');for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return h}
@@ -344,8 +343,8 @@ const cleanName=v=>String(v==null?'':v).replace(/[\u0000-\u001f\u007f-\u009f\u20
 const num=v=>typeof v==='number'&&isFinite(v);
 function peerList(){return R?R.peers().filter(p=>p.presence&&p.presence.n):[]}
 function myPeer(){const me=R?R.peers().find(p=>p.sameTab):null;return me?me.peer:'solo'}
-function hostPeer(){if(!R)return null;const id=R.hostId();return peerList().find(p=>p.peer===id)||null}
-function amHost(){return !!(R&&R.isHost())}
+function hostPeer(){return peerList()[0]||null}
+function amHost(){const h=hostPeer();return !!(h&&h.sameTab)}
 function colorOf(p){const ps=peerList();const i=ps.findIndex(q=>q.peer===p.peer);return Math.max(0,i)%6}
 function others(){return peerList().filter(p=>!p.sameTab)}
 function inGame(p){const q=p.presence;return q.gid===myGid&&myGid!==0}
@@ -358,9 +357,9 @@ async function joinRoom(){
   const name=cleanName($('nameIn').value)||'Jugador';
   let code=$('codeIn').value.trim().toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,12);
   if(!code){code=randCode();$('codeIn').value=code}
-  if(!window.Peer){$('mpStatus').textContent='No se ha podido cargar la parte online. Revisa la conexión y recarga la página.';return}
+  if(!window.mqtt){$('mpStatus').textContent='No se ha podido cargar la parte online. Revisa la conexión y recarga la página.';return}
   $('joinBtn').disabled=true;$('mpStatus').textContent='Conectando con la sala…';
-  try{R=await makeNet(code)}catch(e){$('joinBtn').disabled=false;const m=e&&e.message;$('mpStatus').textContent=m==='full'?'La sala está llena (máximo 6 jugadores).':m==='timeout'?'No responde. Comprueba la conexión, o prueba con otra red (algunas redes de institutos bloquean este tipo de conexión).':'No se ha podido entrar en la sala. Vuelve a intentarlo.';return}
+  try{R=await makeNet(code)}catch(e){$('joinBtn').disabled=false;const m=e&&e.message;$('mpStatus').textContent=m==='timeout'?'No se ha podido conectar con el servidor. Comprueba la conexión, o prueba con otra red (algunas redes de institutos lo bloquean).':'No se ha podido entrar en la sala. Vuelve a intentarlo.';return}
   R.onLost(()=>{if(mode!=='mp')return;R=null;mode='solo';hideHud();state='menu';show('menu');$('loadErr').textContent='Se ha perdido la conexión con el anfitrión.'});
   $('joinBtn').disabled=false;
   myName=name;roomCode=code;mode='mp';mpSt='lobby';myGid=0;lastGo=0;peerSt.clear();
@@ -379,7 +378,7 @@ function renderLobby(){
   const ps=peerList(),h=hostPeer(),ul=$('lobbyList');ul.textContent='';
   ps.forEach(p=>{const li=document.createElement('li');let t=cleanName(p.presence.n)||'Jugador';if(p.sameTab)t+=' (tú)';if(h===p)t+=', anfitrión';const st=p.presence.st;if(st==='play')t+=', jugando';li.textContent=t;li.style.color=CSS_COL[colorOf(p)];ul.appendChild(li)});
   const host=amHost();$('goBtn').classList.toggle('hidden',!host);$('waitTxt').classList.toggle('hidden',host);
-  $('roomCodeTxt').textContent=roomCode;
+  $('roomCodeTxt').textContent=roomCode;$('srvTxt').textContent=R&&R.broker&&R.broker()>1?'Servidor de reserva '+R.broker()+'. Si un amigo no aparece, salid y volved a entrar los dos.':'';
   const np=Math.max(1,Math.min(6,ps.filter(p=>p.sameTab||p.presence.st==='lobby').length));
   $('diffTxt').textContent=np<=1?'Si empiezas solo en la sala, la partida es como el modo solo.':('Con '+np+' jugadores: '+keysFor(np)+' llaves y el fantasma un '+Math.round(Math.min(.3,.1*(np-1))*100)+' % más rápido.');
 }
